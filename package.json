@@ -1,0 +1,27 @@
+{
+  "name": "timetable-scheduler",
+  "version": "1.0.0",
+  "description": "MERN stack college timetable management system",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n SERVER,CLIENT -c yellow,cyan \"npm run server\" \"npm run client\"",
+    "server": "npm run dev --prefix server",
+    "client": "npm run dev --prefix client",
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client",
+    "start": "npm run start --prefix server",
+    "seed": "npm run seed --prefix server",
+    "setup:db": "node server/scripts/testAndSeed.js",
+    "migrate:slots": "npm run migrate:slots --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "keywords": [
+    "mern",
+    "timetable",
+    "scheduler",
+    "college"
+  ],
+  "author": "",
+  "license": "MIT"
+}

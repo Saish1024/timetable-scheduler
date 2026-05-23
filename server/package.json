@@ -1,0 +1,41 @@
+{
+  "name": "timetable-scheduler-server",
+  "version": "1.0.0",
+  "description": "Express + Mongoose API for the Timetable Scheduler",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "seed": "node seed.js",
+    "migrate:slots": "node scripts/migrateTimetableSlots.js"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.38.0",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.8.0",
+    "morgan": "^1.10.0",
+    "winston": "^3.19.0",
+    "xss-clean": "^0.1.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  },
+  "keywords": [
+    "express",
+    "mongoose",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT"
+}
