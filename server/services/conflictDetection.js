@@ -207,4 +207,191 @@ const checkConflicts = async (slotData, excludeSlotId = null) => {
   return conflicts;
 };
 
-module.exports = { checkConflicts };
+const slotKey = (slot) => String(slot._id);
+
+const idOf = (ref) => (ref?._id != null ? String(ref._id) : ref ? String(ref) : "");
+
+const slotsAtTime = (allSlots, { day, period, academicYear, excludeSlotId }) =>
+  allSlots.filter(
+    (slot) =>
+      slot.day === day &&
+      Number(slot.period) === Number(period) &&
+      slot.academicYear === academicYear &&
+      (!excludeSlotId || slotKey(slot) !== String(excludeSlotId))
+  );
+
+/**
+ * In-memory conflict check using a preloaded slot set (same rules as checkConflicts).
+ */
+const checkConflictsInMemory = (slotData, excludeSlotId, allSlots) => {
+  const {
+    day,
+    period,
+    facultyId,
+    roomId,
+    departmentId,
+    semester,
+    division,
+    slotType: rawSlotType,
+    batch,
+    academicYear,
+  } = slotData;
+
+  const slotType = normalizeSlotType(rawSlotType);
+  const normalizedBatch = normalizeBatch(batch);
+  const atTime = slotsAtTime(allSlots, {
+    day,
+    period,
+    academicYear,
+    excludeSlotId,
+  });
+
+  const conflicts = [];
+
+  const facultyResult = atTime.find((s) => idOf(s.faculty) === String(facultyId));
+  if (facultyResult) {
+    const facultyName = facultyResult.faculty?.name || "Faculty";
+    const subjectLabel =
+      facultyResult.subject?.code || facultyResult.subject?.name || "a subject";
+    const roomName = facultyResult.room?.name || "—";
+    conflicts.push({
+      type: "FACULTY_CONFLICT",
+      message: `${facultyName} is already teaching ${subjectLabel} (${formatSlotLocation(facultyResult)}) in ${roomName}`,
+      existingSlot: toExistingSlot(facultyResult),
+    });
+  }
+
+  const roomResult = atTime.find((s) => idOf(s.room) === String(roomId));
+  if (roomResult) {
+    const roomName = roomResult.room?.name || "Room";
+    const subjectLabel =
+      roomResult.subject?.code || roomResult.subject?.name || "a class";
+    const facultyName = roomResult.faculty?.name || "—";
+    conflicts.push({
+      type: "ROOM_CONFLICT",
+      message: `${roomName} is already booked for ${subjectLabel} with ${facultyName} (${formatSlotLocation(roomResult)})`,
+      existingSlot: toExistingSlot(roomResult),
+    });
+  }
+
+  const divisionCode = String(division).trim();
+
+  if (isLecture(slotType)) {
+    const divisionLectureResult = atTime.find(
+      (s) =>
+        idOf(s.department) === String(departmentId) &&
+        Number(s.semester) === Number(semester) &&
+        String(s.division).trim() === divisionCode &&
+        LECTURE_TYPES.includes(normalizeSlotType(s.slotType))
+    );
+    if (divisionLectureResult) {
+      const subjectName = divisionLectureResult.subject?.name || "a subject";
+      conflicts.push({
+        type: "DIVISION_CONFLICT",
+        message: `Division ${division} already has ${subjectName} lecture on ${day} Period ${period}`,
+        existingSlot: toExistingSlot(divisionLectureResult),
+      });
+    }
+  }
+
+  let batchPracticalResult = null;
+  if (isPractical(slotType) && normalizedBatch) {
+    batchPracticalResult = atTime.find(
+      (s) =>
+        idOf(s.department) === String(departmentId) &&
+        Number(s.semester) === Number(semester) &&
+        String(s.division).trim() === divisionCode &&
+        normalizeBatch(s.batch) === normalizedBatch &&
+        PRACTICAL_TYPES.includes(normalizeSlotType(s.slotType))
+    );
+    if (batchPracticalResult) {
+      conflicts.push({
+        type: "BATCH_CONFLICT",
+        message: `${normalizedBatch} in Division ${division} already has a practical on ${day} Period ${period}`,
+        existingSlot: toExistingSlot(batchPracticalResult),
+      });
+    }
+  }
+
+  if (isPractical(slotType)) {
+    const lectureBlocksPracticalResult = atTime.find(
+      (s) =>
+        idOf(s.department) === String(departmentId) &&
+        Number(s.semester) === Number(semester) &&
+        String(s.division).trim() === divisionCode &&
+        LECTURE_TYPES.includes(normalizeSlotType(s.slotType))
+    );
+    if (
+      lectureBlocksPracticalResult &&
+      (!batchPracticalResult ||
+        slotKey(lectureBlocksPracticalResult) !== slotKey(batchPracticalResult))
+    ) {
+      const subjectName =
+        lectureBlocksPracticalResult.subject?.name || "a lecture";
+      conflicts.push({
+        type: "LECTURE_BLOCKS_PRACTICAL",
+        message: `Division ${division} has ${subjectName} lecture on ${day} Period ${period} — batch ${normalizedBatch || "?"} cannot have a practical at the same time`,
+        existingSlot: toExistingSlot(lectureBlocksPracticalResult),
+      });
+    }
+  }
+
+  return conflicts;
+};
+
+const detectIntraCellConflicts = (deptSlots) => {
+  const byCell = new Map();
+  for (const slot of deptSlots) {
+    const key = `${slot.day}|${slot.period}|${slot.division}|${slot.academicYear}`;
+    if (!byCell.has(key)) byCell.set(key, []);
+    byCell.get(key).push(slot);
+  }
+
+  const conflictMap = new Map();
+  for (const cellSlots of byCell.values()) {
+    if (cellSlots.length < 2) continue;
+    for (let i = 0; i < cellSlots.length; i++) {
+      for (let j = i + 1; j < cellSlots.length; j++) {
+        const a = cellSlots[i];
+        const b = cellSlots[j];
+        const facultyA = idOf(a.faculty);
+        const facultyB = idOf(b.faculty);
+        if (facultyA && facultyB && facultyA === facultyB) {
+          for (const slot of [a, b]) {
+            const key = slotKey(slot);
+            if (!conflictMap.has(key)) conflictMap.set(key, { slotId: key, reasons: [] });
+            const name = slot.faculty?.name || "Faculty";
+            const other = slot === a ? b : a;
+            const subject = other.subject?.code || other.subject?.name || "—";
+            const batch = other.batch ? ` · Batch ${other.batch}` : "";
+            conflictMap.get(key).reasons.push({
+              type: "INTRA_CELL_FACULTY",
+              message: `${name} appears twice in this cell (${subject}${batch})`,
+              existingSlot: toExistingSlot(other),
+            });
+          }
+        }
+        const roomA = idOf(a.room);
+        const roomB = idOf(b.room);
+        if (roomA && roomB && roomA === roomB) {
+          for (const slot of [a, b]) {
+            const key = slotKey(slot);
+            if (!conflictMap.has(key)) conflictMap.set(key, { slotId: key, reasons: [] });
+            const roomName = slot.room?.name || "Room";
+            const other = slot === a ? b : a;
+            const subject = other.subject?.code || other.subject?.name || "—";
+            const batch = other.batch ? ` · Batch ${other.batch}` : "";
+            conflictMap.get(key).reasons.push({
+              type: "INTRA_CELL_ROOM",
+              message: `${roomName} is used twice in this cell (${subject}${batch})`,
+              existingSlot: toExistingSlot(other),
+            });
+          }
+        }
+      }
+    }
+  }
+  return conflictMap;
+};
+
+module.exports = { checkConflicts, checkConflictsInMemory, detectIntraCellConflicts };

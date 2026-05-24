@@ -10,7 +10,7 @@ const api = axios.create({
         ? ''
         : 'http://localhost:5000',
   withCredentials: true,
-  timeout: 10000,
+  timeout: import.meta.env.PROD ? 25000 : 10000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -85,6 +85,15 @@ api.interceptors.response.use(
       url.includes('/api/auth/refresh')
 
     if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+      const method = originalRequest?.method?.toLowerCase()
+      if (
+        originalRequest &&
+        !originalRequest._timeoutRetry &&
+        method === 'get'
+      ) {
+        originalRequest._timeoutRetry = true
+        return api(originalRequest)
+      }
       if (!originalRequest?.skipErrorToast) {
         toast.error(
           'The server is taking too long to respond. Please try again in a moment.'

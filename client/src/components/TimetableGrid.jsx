@@ -116,7 +116,8 @@ const TimetableGrid = ({
   const [activeDivision, setActiveDivision] = useState(divisionProp || '')
   const [viewFilter, setViewFilter] = useState(FILTER_ALL)
   const [conflictEntries, setConflictEntries] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [scheduleLoading, setScheduleLoading] = useState(true)
+  const [slotsLoading, setSlotsLoading] = useState(false)
   const [modalState, setModalState] = useState({
     open: false,
     day: null,
@@ -126,6 +127,7 @@ const TimetableGrid = ({
   const [dropTarget, setDropTarget] = useState(null)
   const [movingSlotId, setMovingSlotId] = useState(null)
   const [deletingSlotId, setDeletingSlotId] = useState(null)
+  const slotsFetchRef = useRef(0)
 
   const divisions = useMemo(
     () => getDivisions(schedule, department),
@@ -184,68 +186,152 @@ const TimetableGrid = ({
     }
   }, [schedule, department, activeDivision, onDivisionChange])
 
-  const selectDivision = (code) => {
-    setActiveDivision(code)
-    setViewFilter(FILTER_ALL)
-    onDivisionChange?.(code)
-  }
+  const fetchSchedule = useCallback(async () => {
+    if (!departmentId) return null
+    const scheduleRes = await api.get(
+      `/api/schedule/${departmentId}/${semester}`,
+      { params: { academicYear } }
+    )
+    const sched = prepareScheduleFromApi(
+      scheduleRes.data.schedule || null,
+      department || scheduleRes.data.departmentConfig
+    )
+    setSchedule(sched)
+    return sched
+  }, [departmentId, department, academicYear, semester])
 
-  const fetchData = useCallback(async () => {
-    if (!departmentId) {
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    try {
-      const scheduleRes = await api.get(
-        `/api/schedule/${departmentId}/${semester}`,
-        { params: { academicYear } }
-      )
-      const sched = prepareScheduleFromApi(
-        scheduleRes.data.schedule || null,
-        department || scheduleRes.data.departmentConfig
-      )
-      setSchedule(sched)
-
-      const divs = getDivisions(sched, department)
-      const division =
-        activeDivision ||
-        getActiveDivisionCode(sched, department) ||
-        divs[0]?.code ||
-        ''
-
-      if (!division) {
+  const reloadSlots = useCallback(
+    async (division, { includeConflicts = true } = {}) => {
+      if (!departmentId || !division) {
         setSlots([])
         setConflictEntries([])
         onSlotsLoaded?.(0)
         return
       }
 
-      const [slotsRes, conflictsRes] = await Promise.all([
-        api.get(`/api/timetable/${departmentId}/${semester}`, {
-          params: { academicYear, division },
-        }),
-        api.get(`/api/timetable/${departmentId}/${semester}/conflicts`, {
-          params: { academicYear, division },
-        }),
-      ])
+      const fetchId = ++slotsFetchRef.current
+      const slotsRes = await api.get(`/api/timetable/${departmentId}/${semester}`, {
+        params: { academicYear, division },
+      })
+
+      if (fetchId !== slotsFetchRef.current) return
+
       const loaded = slotsRes.data.slots || []
       setSlots(loaded)
       onSlotsLoaded?.(loaded.length)
-      setConflictEntries(conflictsRes.data.conflicts || [])
+
+      if (!includeConflicts) return
+
+      api
+        .get(`/api/timetable/${departmentId}/${semester}/conflicts`, {
+          params: { academicYear, division },
+          skipErrorToast: true,
+        })
+        .then((conflictsRes) => {
+          if (fetchId !== slotsFetchRef.current) return
+          setConflictEntries(conflictsRes.data.conflicts || [])
+        })
+        .catch(() => {
+          if (fetchId !== slotsFetchRef.current) return
+          setConflictEntries([])
+        })
+    },
+    [departmentId, academicYear, semester, onSlotsLoaded]
+  )
+
+  const resolveDivision = useCallback(
+    (sched, preferred = '') => {
+      const divs = getDivisions(sched, department)
+      return (
+        preferred ||
+        getActiveDivisionCode(sched, department) ||
+        divs[0]?.code ||
+        ''
+      )
+    },
+    [department]
+  )
+
+  const bootstrapGrid = useCallback(async () => {
+    if (!departmentId) {
+      setScheduleLoading(false)
+      setSlotsLoading(false)
+      return
+    }
+
+    setScheduleLoading(true)
+    setSlotsLoading(true)
+    try {
+      const sched = await fetchSchedule()
+      setScheduleLoading(false)
+
+      const division = resolveDivision(sched)
+
+      if (division) {
+        setActiveDivision(division)
+        onDivisionChange?.(division)
+        await reloadSlots(division)
+      } else {
+        setSlots([])
+        setConflictEntries([])
+        onSlotsLoaded?.(0)
+      }
     } catch {
       setSchedule(null)
       setSlots([])
       setConflictEntries([])
       onSlotsLoaded?.(0)
     } finally {
-      setLoading(false)
+      setScheduleLoading(false)
+      setSlotsLoading(false)
     }
-  }, [departmentId, department, academicYear, semester, activeDivision, onSlotsLoaded])
+  }, [
+    departmentId,
+    fetchSchedule,
+    resolveDivision,
+    reloadSlots,
+    onDivisionChange,
+    onSlotsLoaded,
+  ])
 
   useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    bootstrapGrid()
+  }, [bootstrapGrid])
+
+  const refreshSlots = useCallback(
+    async (division) => {
+      if (!division) return
+      setSlotsLoading(true)
+      try {
+        await reloadSlots(division)
+      } catch {
+        setSlots([])
+        setConflictEntries([])
+        onSlotsLoaded?.(0)
+      } finally {
+        setSlotsLoading(false)
+      }
+    },
+    [reloadSlots, onSlotsLoaded]
+  )
+
+  const refreshGrid = useCallback(async () => {
+    if (activeDivision) {
+      await refreshSlots(activeDivision)
+      return
+    }
+    await bootstrapGrid()
+  }, [activeDivision, refreshSlots, bootstrapGrid])
+
+  const selectDivision = useCallback(
+    (code) => {
+      setActiveDivision(code)
+      setViewFilter(FILTER_ALL)
+      onDivisionChange?.(code)
+      refreshSlots(code)
+    },
+    [onDivisionChange, refreshSlots]
+  )
 
   const days = schedule?.workingDays?.length
     ? schedule.workingDays
@@ -278,7 +364,7 @@ const TimetableGrid = ({
     setModalState({ open: false, day: null, period: null })
 
   const handleChanged = () => {
-    fetchData()
+    refreshGrid()
     onDataChange?.()
   }
 
@@ -294,7 +380,7 @@ const TimetableGrid = ({
           skipSuccessToast: true,
         })
         toast.success('Slot deleted')
-        await fetchData()
+        await refreshGrid()
         onDataChange?.()
       } catch (err) {
         toast.error(err.response?.data?.message || 'Failed to delete slot')
@@ -302,7 +388,7 @@ const TimetableGrid = ({
         setDeletingSlotId(null)
       }
     },
-    [fetchData, onDataChange]
+    [refreshGrid, onDataChange]
   )
 
   const buildSlotPayload = useCallback(
@@ -355,7 +441,7 @@ const TimetableGrid = ({
           { skipErrorToast: true, skipSuccessToast: true }
         )
         toast.success('Slot copied')
-        await fetchData()
+        await refreshGrid()
         onDataChange?.()
       } catch (err) {
         if (err.response?.status === 409) {
@@ -374,7 +460,7 @@ const TimetableGrid = ({
         setMovingSlotId(null)
       }
     },
-    [slotsByCell, buildSlotPayload, fetchData, onDataChange]
+    [slotsByCell, buildSlotPayload, refreshGrid, onDataChange]
   )
 
   const handleSlotDragStart = useCallback((slot, e) => {
@@ -429,9 +515,9 @@ const TimetableGrid = ({
   const cellSlotsFiltered = (day, period) =>
     filterSlotsByView(cellSlots(day, period), viewFilter)
 
-  if (loading) return <TimetableGridSkeleton />
+  if (scheduleLoading && !schedule) return <TimetableGridSkeleton />
 
-  if (!activeDivision && divisions.length === 0) {
+  if (!scheduleLoading && !activeDivision && divisions.length === 0) {
     return (
       <div className="p-6 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-900">
         Configure class structure on the Schedule page for this semester (single
@@ -441,7 +527,14 @@ const TimetableGrid = ({
   }
 
   return (
-    <div className={`space-y-3 ${className}`}>
+    <div className={`space-y-3 ${className} relative`}>
+      {slotsLoading && (
+        <div className="absolute inset-0 z-10 flex items-start justify-center pt-4 pointer-events-none">
+          <span className="rounded-full bg-white/90 border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 shadow-sm">
+            Updating timetable...
+          </span>
+        </div>
+      )}
       {showDivisionTabs && (
         <div className="border-b border-gray-200">
           <div

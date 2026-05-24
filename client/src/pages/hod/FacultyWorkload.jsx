@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import api from '../../api/axios'
 import { useHodDepartment, NoDepartmentMessage } from '../../hooks/useHodDepartment'
+import { selectClass } from '../../styles/formControls'
 
 const ACADEMIC_YEAR = '2025-26'
+const SEMESTERS = [1, 2, 3, 4, 5, 6, 7, 8]
 
 const FacultyWorkload = () => {
   const { departmentId } = useHodDepartment()
+  const [activeSemester, setActiveSemester] = useState(1)
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -15,7 +18,7 @@ const FacultyWorkload = () => {
     try {
       const [facultyRes, slotsRes] = await Promise.all([
         api.get('/api/faculty', { params: { department: departmentId } }),
-        api.get(`/api/timetable/${departmentId}`, {
+        api.get(`/api/timetable/${departmentId}/${activeSemester}`, {
           params: { academicYear: ACADEMIC_YEAR },
         }),
       ])
@@ -24,33 +27,31 @@ const FacultyWorkload = () => {
       const slots = slotsRes.data.slots || []
 
       const subjectsByFaculty = {}
+      const periodsByFaculty = {}
       for (const slot of slots) {
-        const fid = slot.faculty?._id || slot.faculty
+        const fid = String(slot.faculty?._id || slot.faculty || '')
         if (!fid) continue
+        periodsByFaculty[fid] = (periodsByFaculty[fid] || 0) + 1
         if (!subjectsByFaculty[fid]) subjectsByFaculty[fid] = new Set()
         const label = slot.subject?.code || slot.subject?.name
         if (label) subjectsByFaculty[fid].add(label)
       }
 
-      const workloadRows = await Promise.all(
-        faculty.map(async (f) => {
-          const { data } = await api.get(`/api/faculty/${f._id}/workload`, {
-            params: { academicYear: ACADEMIC_YEAR },
-          })
-          const max = f.maxPeriodsPerWeek || 30
-          const total = data.totalPeriods ?? 0
-          const pct = max > 0 ? Math.min(100, Math.round((total / max) * 100)) : 0
-          return {
-            _id: f._id,
-            name: f.name,
-            subjects: [...(subjectsByFaculty[f._id] || [])].sort().join(', ') || '—',
-            totalPeriods: total,
-            maxPeriods: max,
-            utilization: pct,
-            overloaded: total > max,
-          }
-        })
-      )
+      const workloadRows = faculty.map((f) => {
+        const fid = String(f._id)
+        const max = f.maxPeriodsPerWeek || 30
+        const total = periodsByFaculty[fid] ?? 0
+        const pct = max > 0 ? Math.min(100, Math.round((total / max) * 100)) : 0
+        return {
+          _id: f._id,
+          name: f.name,
+          subjects: [...(subjectsByFaculty[fid] || [])].sort().join(', ') || '—',
+          totalPeriods: total,
+          maxPeriods: max,
+          utilization: pct,
+          overloaded: total > max,
+        }
+      })
 
       setRows(workloadRows)
     } catch {
@@ -58,7 +59,7 @@ const FacultyWorkload = () => {
     } finally {
       setLoading(false)
     }
-  }, [departmentId])
+  }, [departmentId, activeSemester])
 
   useEffect(() => {
     fetchData()
@@ -68,11 +69,27 @@ const FacultyWorkload = () => {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Faculty Workload</h1>
-        <p className="text-gray-600 text-sm mt-1">
-          Weekly period assignments for your department faculty.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Faculty Workload</h1>
+          <p className="text-gray-600 text-sm mt-1">
+            Weekly period assignments for your department faculty.
+          </p>
+        </div>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-gray-600">Semester</span>
+          <select
+            className={selectClass}
+            value={activeSemester}
+            onChange={(e) => setActiveSemester(Number(e.target.value))}
+          >
+            {SEMESTERS.map((sem) => (
+              <option key={sem} value={sem}>
+                Semester {sem}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">

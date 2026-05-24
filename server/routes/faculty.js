@@ -5,7 +5,12 @@ const Faculty = require("../models/Faculty");
 const Department = require("../models/Department");
 const TimetableSlot = require("../models/TimetableSlot");
 const { protect, adminOnly } = require("../middleware/auth");
-const { keys, get: cacheGet, set: cacheSet } = require("../utils/cache");
+const {
+  keys,
+  get: cacheGet,
+  set: cacheSet,
+  invalidateFaculty,
+} = require("../utils/cache");
 
 const router = express.Router();
 
@@ -14,6 +19,54 @@ const listFacultyByDepartment = (departmentId) =>
     .populate("department", "name code")
     .sort({ name: 1 })
     .lean();
+
+router.get("/workload/bulk", protect, async (req, res, next) => {
+  try {
+    const { department, academicYear, semester } = req.query;
+    const slotMatch = {};
+    if (academicYear) slotMatch.academicYear = academicYear;
+    if (semester != null && semester !== "") {
+      const sem = Number(semester);
+      if (Number.isNaN(sem) || sem < 1 || sem > 8) {
+        return res
+          .status(400)
+          .json({ success: false, message: "semester must be between 1 and 8" });
+      }
+      slotMatch.semester = sem;
+    }
+
+    const facultyFilter = {};
+    if (department) {
+      if (!mongoose.Types.ObjectId.isValid(department)) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid department id" });
+      }
+      facultyFilter.department = department;
+    }
+
+    const facultyIds = await Faculty.find(facultyFilter).distinct("_id");
+    if (facultyIds.length === 0) {
+      return res.json({ success: true, workloads: {} });
+    }
+
+    slotMatch.faculty = { $in: facultyIds };
+
+    const totals = await TimetableSlot.aggregate([
+      { $match: slotMatch },
+      { $group: { _id: "$faculty", totalPeriods: { $sum: 1 } } },
+    ]);
+
+    const workloads = totals.reduce((acc, row) => {
+      acc[String(row._id)] = row.totalPeriods;
+      return acc;
+    }, {});
+
+    res.json({ success: true, workloads });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get("/", protect, async (req, res, next) => {
   try {
@@ -190,6 +243,7 @@ router.post("/", protect, adminOnly, async (req, res, next) => {
     const populated = await Faculty.findById(faculty._id)
       .populate("department", "name code")
       .lean();
+    await invalidateFaculty(department);
     res.status(201).json({ success: true, faculty: populated });
   } catch (err) {
     if (err.code === 11000) {
@@ -211,6 +265,13 @@ router.put("/:id", protect, adminOnly, async (req, res, next) => {
         .json({ success: false, message: "Invalid faculty id" });
     }
 
+    const existing = await Faculty.findById(id).select("department").lean();
+    if (!existing) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Faculty not found" });
+    }
+
     const updates = { ...req.body };
     if (updates.shortCode !== undefined) {
       updates.shortCode = String(updates.shortCode).trim().toUpperCase();
@@ -223,10 +284,12 @@ router.put("/:id", protect, adminOnly, async (req, res, next) => {
       .populate("department", "name code")
       .lean();
 
-    if (!faculty) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Faculty not found" });
+    await invalidateFaculty(existing.department);
+    if (
+      updates.department &&
+      String(updates.department) !== String(existing.department)
+    ) {
+      await invalidateFaculty(updates.department);
     }
     res.json({ success: true, faculty });
   } catch (err) {
@@ -264,6 +327,7 @@ router.delete("/:id", protect, adminOnly, async (req, res, next) => {
         .json({ success: false, message: "Faculty not found" });
     }
 
+    await invalidateFaculty(deleted.department);
     res.json({ success: true, message: "Faculty deleted" });
   } catch (err) {
     next(err);

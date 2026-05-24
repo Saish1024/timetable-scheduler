@@ -14,11 +14,6 @@ import {
 const ACADEMIC_YEAR = '2025-26'
 const SEMESTERS = [1, 2, 3, 4, 5, 6, 7, 8]
 
-const deriveSemesterStatus = (slots) => {
-  if (!slots?.length) return 'draft'
-  return slots.every((s) => s.status === 'published') ? 'published' : 'draft'
-}
-
 const StatusBadge = ({ status }) => {
   const published = status === 'published'
   return (
@@ -71,29 +66,10 @@ const Timetable = () => {
     }
     setStatusLoading(true)
     try {
-      const results = await Promise.all(
-        SEMESTERS.map((sem) =>
-          api
-            .get(`/api/timetable/${departmentId}/${sem}`, {
-              params: { academicYear: ACADEMIC_YEAR },
-            })
-            .then((res) => {
-              const slots = res.data.slots || []
-              return {
-                sem,
-                status: deriveSemesterStatus(slots),
-                slotCount: slots.length,
-              }
-            })
-            .catch(() => ({ sem, status: 'draft', slotCount: 0 }))
-        )
-      )
-      setSemesterStatuses(
-        results.reduce((acc, { sem, status }) => {
-          acc[sem] = status
-          return acc
-        }, {})
-      )
+      const { data } = await api.get(`/api/timetable/${departmentId}/statuses`, {
+        params: { academicYear: ACADEMIC_YEAR },
+      })
+      setSemesterStatuses(data.statuses || {})
     } finally {
       setStatusLoading(false)
     }

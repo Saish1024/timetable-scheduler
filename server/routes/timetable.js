@@ -14,7 +14,7 @@ const {
   isLecture,
   isPractical,
 } = require("../utils/slotTypes");
-const { checkConflicts } = require("../services/conflictDetection");
+const { checkConflicts, checkConflictsInMemory, detectIntraCellConflicts } = require("../services/conflictDetection");
 const {
   keys,
   get: cacheGet,
@@ -452,6 +452,61 @@ router.post(
 );
 
 router.get(
+  "/:departmentId/statuses",
+  protect,
+  departmentAccess,
+  async (req, res, next) => {
+    try {
+      const { departmentId } = req.params;
+      const { academicYear } = req.query;
+
+      if (!mongoose.Types.ObjectId.isValid(departmentId)) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid departmentId" });
+      }
+      if (!academicYear) {
+        return res.status(400).json({
+          success: false,
+          message: "academicYear query parameter is required",
+        });
+      }
+
+      const grouped = await TimetableSlot.aggregate([
+        {
+          $match: {
+            department: new mongoose.Types.ObjectId(departmentId),
+            academicYear,
+          },
+        },
+        {
+          $group: {
+            _id: "$semester",
+            total: { $sum: 1 },
+            published: {
+              $sum: { $cond: [{ $eq: ["$status", "published"] }, 1, 0] },
+            },
+          },
+        },
+      ]);
+
+      const statuses = {};
+      for (let sem = 1; sem <= 8; sem += 1) {
+        statuses[sem] = "draft";
+      }
+      for (const row of grouped) {
+        statuses[row._id] =
+          row.total > 0 && row.published === row.total ? "published" : "draft";
+      }
+
+      res.json({ success: true, statuses });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.get(
   "/:departmentId/:semester/conflicts",
   protect,
   departmentAccess,
@@ -472,118 +527,69 @@ router.get(
         filter.division = String(req.query.division).trim();
       }
 
-      const deptSlots = await populateSlot(TimetableSlot.find(filter));
+      const deptSlots = await populateSlot(TimetableSlot.find(filter)).lean();
 
       if (deptSlots.length === 0) {
         return res.json({ success: true, count: 0, conflicts: [] });
       }
 
-      const conflictMap = new Map();
+      const academicYear = req.query.academicYear;
+      const timePairs = [
+        ...new Map(
+          deptSlots.map((s) => [
+            `${s.day}\0${s.period}`,
+            { day: s.day, period: Number(s.period) },
+          ])
+        ).values(),
+      ];
 
-      await Promise.all(
-        deptSlots.map(async (slot) => {
-          const key = slot._id.toString();
-          const reasons = [];
+      const globalSlots = await populateSlot(
+        TimetableSlot.find({
+          academicYear,
+          $or: timePairs,
+        })
+      ).lean();
 
-          const globalConflicts = await checkConflicts(
-            {
-              day: slot.day,
-              period: slot.period,
-              facultyId: slot.faculty?._id || slot.faculty,
-              roomId: slot.room?._id || slot.room,
-              departmentId: slot.department?._id || slot.department,
-              semester: slot.semester,
-              division: slot.division,
-              slotType: slot.slotType,
-              batch: slot.batch,
-              academicYear: slot.academicYear,
-            },
-            slot._id
-          );
+      const conflictMap = detectIntraCellConflicts(deptSlots);
 
-          for (const c of globalConflicts) {
-            reasons.push({
-              type: c.type,
-              message: c.message,
-              existingSlot: c.existingSlot,
-            });
-          }
+      for (const slot of deptSlots) {
+        const key = slot._id.toString();
+        const reasons = [];
 
-          const sameCellFilter = {
-            _id: { $ne: slot._id },
-            department: departmentId,
-            semester: sem,
+        const globalConflicts = checkConflictsInMemory(
+          {
             day: slot.day,
             period: slot.period,
-            academicYear: slot.academicYear,
+            facultyId: slot.faculty?._id || slot.faculty,
+            roomId: slot.room?._id || slot.room,
+            departmentId: slot.department?._id || slot.department,
+            semester: slot.semester,
             division: slot.division,
-          };
+            slotType: slot.slotType,
+            batch: slot.batch,
+            academicYear: slot.academicYear,
+          },
+          slot._id,
+          globalSlots
+        );
 
-          const facultyOther = await populateSlot(
-            TimetableSlot.findOne({
-              ...sameCellFilter,
-              faculty: slot.faculty?._id || slot.faculty,
-            })
-          );
+        for (const c of globalConflicts) {
+          reasons.push({
+            type: c.type,
+            message: c.message,
+            existingSlot: c.existingSlot,
+          });
+        }
 
-          if (facultyOther) {
-            const name = facultyOther.faculty?.name || "Faculty";
-            const subject =
-              facultyOther.subject?.code || facultyOther.subject?.name || "—";
-            const batch = facultyOther.batch
-              ? ` · Batch ${facultyOther.batch}`
-              : "";
-            reasons.push({
-              type: "INTRA_CELL_FACULTY",
-              message: `${name} appears twice in this cell (${subject}${batch})`,
-              existingSlot: {
-                _id: facultyOther._id,
-                day: facultyOther.day,
-                period: facultyOther.period,
-                division: facultyOther.division,
-                batch: facultyOther.batch,
-                subject: facultyOther.subject,
-                faculty: facultyOther.faculty,
-                room: facultyOther.room,
-                department: facultyOther.department,
-              },
-            });
-          }
+        const intra = conflictMap.get(key);
+        if (intra?.reasons?.length) {
+          reasons.push(...intra.reasons);
+        }
 
-          const roomOther = await populateSlot(
-            TimetableSlot.findOne({
-              ...sameCellFilter,
-              room: slot.room?._id || slot.room,
-            })
-          );
-
-          if (roomOther) {
-            const roomName = roomOther.room?.name || "Room";
-            const subject =
-              roomOther.subject?.code || roomOther.subject?.name || "—";
-            const batch = roomOther.batch ? ` · Batch ${roomOther.batch}` : "";
-            reasons.push({
-              type: "INTRA_CELL_ROOM",
-              message: `${roomName} is used twice in this cell (${subject}${batch})`,
-              existingSlot: {
-                _id: roomOther._id,
-                day: roomOther.day,
-                period: roomOther.period,
-                division: roomOther.division,
-                batch: roomOther.batch,
-                subject: roomOther.subject,
-                faculty: roomOther.faculty,
-                room: roomOther.room,
-                department: roomOther.department,
-              },
-            });
-          }
-
-          if (reasons.length > 0) {
-            conflictMap.set(key, { slotId: key, reasons });
-          }
-        })
-      );
+        if (reasons.length > 0) {
+          conflictMap.set(key, { slotId: key, reasons });
+        }
+      }
 
       res.json({
         success: true,
@@ -618,30 +624,53 @@ router.get(
       }
 
       const academicYear = req.query.academicYear;
+      const divisionFilter = req.query.division
+        ? String(req.query.division).trim()
+        : null;
+      const statusFilter = req.query.status || null;
+
       let cacheKey = null;
       if (academicYear) {
         cacheKey = keys.timetable(departmentId, sem, academicYear);
         const cached = await cacheGet(cacheKey);
-        if (cached) {
-          return res.json(cached);
+        if (cached?.slots) {
+          let slots = cached.slots;
+          if (divisionFilter) {
+            slots = slots.filter((s) => s.division === divisionFilter);
+          }
+          if (statusFilter) {
+            slots = slots.filter((s) => s.status === statusFilter);
+          }
+          return res.json({ success: true, count: slots.length, slots });
         }
       }
 
       const filter = { department: departmentId, semester: sem };
       if (academicYear) filter.academicYear = academicYear;
-      if (req.query.status) filter.status = req.query.status;
-      if (req.query.division) filter.division = String(req.query.division).trim();
 
-      const slots = await populateSlot(TimetableSlot.find(filter)).sort({
+      const allSlots = await populateSlot(TimetableSlot.find(filter)).sort({
         day: 1,
         period: 1,
         batch: 1,
       });
 
-      const payload = { success: true, count: slots.length, slots };
       if (cacheKey) {
-        await cacheSet(cacheKey, payload);
+        await cacheSet(cacheKey, {
+          success: true,
+          count: allSlots.length,
+          slots: allSlots,
+        });
       }
+
+      let slots = allSlots;
+      if (divisionFilter) {
+        slots = slots.filter((s) => s.division === divisionFilter);
+      }
+      if (statusFilter) {
+        slots = slots.filter((s) => s.status === statusFilter);
+      }
+
+      const payload = { success: true, count: slots.length, slots };
       res.json(payload);
     } catch (err) {
       next(err);

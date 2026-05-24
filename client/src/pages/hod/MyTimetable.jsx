@@ -1,14 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Printer } from 'lucide-react'
-import api from '../../api/axios'
 import TimetableGrid from '../../components/TimetableGrid'
 import { useHodDepartment, NoDepartmentMessage } from '../../hooks/useHodDepartment'
 import ExportPDFPanel from '../../components/ExportPDFPanel'
 import { selectClass } from '../../styles/formControls'
-import {
-  getActiveDivisionCode,
-  prepareScheduleFromApi,
-} from '../../utils/scheduleHelpers'
 
 const ACADEMIC_YEAR = '2025-26'
 const SEMESTERS = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -19,26 +14,6 @@ const MyTimetable = () => {
   const [semester, setSemester] = useState(1)
   const [activeDivision, setActiveDivision] = useState('')
   const [exportPanelOpen, setExportPanelOpen] = useState(false)
-  useEffect(() => {
-    if (!departmentId) {
-      setActiveDivision('')
-      return
-    }
-    api
-      .get(`/api/schedule/${departmentId}/${semester}`, {
-        params: { academicYear: ACADEMIC_YEAR },
-      })
-      .then((res) => {
-        const dept = department || res.data.departmentConfig
-        const sched = prepareScheduleFromApi(res.data.schedule, dept)
-        setActiveDivision(getActiveDivisionCode(sched, dept))
-      })
-      .catch(() => {
-        setActiveDivision('')
-      })
-  }, [departmentId, semester, department])
-
-
   if (!departmentId) return <NoDepartmentMessage />
 
   return (

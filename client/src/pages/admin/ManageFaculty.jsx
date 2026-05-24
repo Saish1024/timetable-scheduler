@@ -29,22 +29,10 @@ const ManageFaculty = () => {
       const list = data.faculty || []
       setFaculty(list)
 
-      const workloadResults = await Promise.all(
-        list.map((f) =>
-          api
-            .get(`/api/faculty/${f._id}/workload`, {
-              params: { academicYear: ACADEMIC_YEAR },
-            })
-            .then((res) => ({ id: f._id, total: res.data.totalPeriods }))
-            .catch(() => ({ id: f._id, total: 0 }))
-        )
-      )
-      setWorkloads(
-        workloadResults.reduce((acc, { id, total }) => {
-          acc[id] = total
-          return acc
-        }, {})
-      )
+      const { data: workloadData } = await api.get('/api/faculty/workload/bulk', {
+        params: { academicYear: ACADEMIC_YEAR },
+      })
+      setWorkloads(workloadData.workloads || {})
     } catch {
       /* error toast via axios interceptor */
     } finally {
