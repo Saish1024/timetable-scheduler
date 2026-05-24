@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { CalendarDays, Eye, EyeOff, Loader2, AlertCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../context/AuthContext'
+import { wakeServer } from '../api/axios'
 
 const inputClass =
   'w-full px-4 py-3 text-sm text-gray-900 bg-white border border-gray-200 rounded-xl shadow-sm placeholder:text-gray-400 transition-[border-color,box-shadow] focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15'
@@ -15,6 +16,21 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
+  const [serverStatus, setServerStatus] = useState('checking')
+
+  useEffect(() => {
+    let cancelled = false
+    wakeServer()
+      .then(() => {
+        if (!cancelled) setServerStatus('ready')
+      })
+      .catch(() => {
+        if (!cancelled) setServerStatus('slow')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   if (loading) {
     return (
@@ -42,7 +58,9 @@ const Login = () => {
     } catch (err) {
       if (!err.response) {
         setFormError(
-          'Cannot reach the server. Ensure the API is running on port 5000 and run npm run seed.'
+          import.meta.env.PROD
+            ? 'The server is still starting (first visit can take up to a minute). Please wait, then try again.'
+            : 'Cannot reach the server. Start the API with npm run dev in the server folder, then run npm run seed.'
         )
       } else {
         setFormError(
@@ -107,6 +125,13 @@ const Login = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
+              {serverStatus === 'checking' && !formError && (
+                <div className="flex gap-2 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-sm text-indigo-800">
+                  <Loader2 className="w-5 h-5 shrink-0 animate-spin text-indigo-600" />
+                  <span>Connecting to server… first load may take a moment.</span>
+                </div>
+              )}
+
               {formError && (
                 <div
                   role="alert"
@@ -177,13 +202,18 @@ const Login = () => {
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || serverStatus === 'checking'}
                 className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-indigo-600 text-white text-sm font-semibold rounded-xl shadow-md shadow-indigo-600/20 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-60 disabled:cursor-not-allowed transition"
               >
                 {submitting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Signing in...
+                  </>
+                ) : serverStatus === 'checking' ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Connecting to server...
                   </>
                 ) : (
                   'Sign in'

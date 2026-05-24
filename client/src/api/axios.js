@@ -18,6 +18,21 @@ const api = axios.create({
 
 let refreshPromise = null
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const isRetriableNetworkError = (error) =>
+  !error.response &&
+  (error.code === 'ERR_NETWORK' ||
+    error.code === 'ECONNABORTED' ||
+    error.message?.includes('timeout') ||
+    error.message?.includes('Network Error'))
+
+const isWarmupRoute = (url = '') =>
+  url.includes('/api/auth/login') ||
+  url.includes('/api/auth/me') ||
+  url.includes('/api/auth/refresh') ||
+  url.includes('/api/health')
+
 const redirectToLogin = () => {
   localStorage.removeItem('token')
   if (window.location.pathname !== '/login') {
@@ -84,12 +99,22 @@ api.interceptors.response.use(
       url.includes('/api/auth/register') ||
       url.includes('/api/auth/refresh')
 
+    if (isRetriableNetworkError(error) && originalRequest && isWarmupRoute(url)) {
+      const retryCount = originalRequest._retryCount || 0
+      if (retryCount < 3) {
+        originalRequest._retryCount = retryCount + 1
+        await sleep(4000 * originalRequest._retryCount)
+        return api(originalRequest)
+      }
+    }
+
     if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
       const method = originalRequest?.method?.toLowerCase()
       if (
         originalRequest &&
         !originalRequest._timeoutRetry &&
-        method === 'get'
+        method === 'get' &&
+        !isWarmupRoute(url)
       ) {
         originalRequest._timeoutRetry = true
         return api(originalRequest)
@@ -139,5 +164,12 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+/** Ping the API so cold-hosted backends (e.g. Render free tier) wake before login. */
+export const wakeServer = () =>
+  api.get('/api/health', {
+    skipErrorToast: true,
+    timeout: 60000,
+  })
 
 export default api
