@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { X, Trash2, AlertCircle, Plus, CheckCircle2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../api/axios'
+import SearchableSelect from './SearchableSelect'
 import { selectClass } from '../styles/formControls'
 import {
   isLecture,
@@ -221,6 +222,39 @@ const SlotModal = ({
 
   const noFacultyAssigned =
     Boolean(draft.subjectId) && !loading && facultyForSubject.length === 0
+
+  const subjectOptions = useMemo(
+    () =>
+      subjects.map((s) => ({
+        value: s._id,
+        label: `${s.code} — ${s.name}`,
+      })),
+    [subjects]
+  )
+
+  const facultyOptions = useMemo(
+    () =>
+      facultyForSubject.map((f) => ({
+        value: f._id,
+        label: `${f.name}${f.shortCode ? ` (${f.shortCode})` : ''}`,
+      })),
+    [facultyForSubject]
+  )
+
+  const roomOptions = useMemo(
+    () =>
+      rooms.map((r) => ({
+        value: r._id,
+        label: `${r.name} (${r.type})`,
+      })),
+    [rooms]
+  )
+
+  const facultyPlaceholder = !draft.subjectId
+    ? 'Select a subject first...'
+    : noFacultyAssigned
+      ? 'No faculty assigned...'
+      : 'Select faculty...'
 
   const validateForm = () => {
     if (!day || period == null || Number.isNaN(Number(period))) {
@@ -604,25 +638,20 @@ const SlotModal = ({
                 <label className="block text-xs font-medium text-gray-500 mb-1">
                   Subject
                 </label>
-                <select
+                <SearchableSelect
                   value={draft.subjectId}
-                  onChange={(e) =>
+                  onChange={(subjectId) =>
                     updateDraft({
-                      subjectId: e.target.value,
+                      subjectId,
                       facultyId: '',
                     })
                   }
+                  options={subjectOptions}
+                  placeholder="Select subject..."
+                  searchPlaceholder="Search subjects..."
                   disabled={loading}
                   required
-                  className={`${selectClass} w-full min-w-0`}
-                >
-                  <option value="">Select subject...</option>
-                  {subjects.map((s) => (
-                    <option key={s._id} value={s._id}>
-                      {s.code} — {s.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               {noFacultyAssigned && (
@@ -659,47 +688,30 @@ const SlotModal = ({
                 <label className="block text-xs font-medium text-gray-500 mb-1">
                   Faculty
                 </label>
-                <select
+                <SearchableSelect
                   value={draft.facultyId}
-                  onChange={(e) => updateDraft({ facultyId: e.target.value })}
+                  onChange={(facultyId) => updateDraft({ facultyId })}
+                  options={facultyOptions}
+                  placeholder={facultyPlaceholder}
+                  searchPlaceholder="Search faculty..."
                   disabled={loading || !draft.subjectId || noFacultyAssigned}
                   required
-                  className={`${selectClass} w-full min-w-0`}
-                >
-                  <option value="">
-                    {!draft.subjectId
-                      ? 'Select a subject first...'
-                      : noFacultyAssigned
-                        ? 'No faculty assigned...'
-                        : 'Select faculty...'}
-                  </option>
-                  {facultyForSubject.map((f) => (
-                    <option key={f._id} value={f._id}>
-                      {f.name}
-                      {f.shortCode ? ` (${f.shortCode})` : ''}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">
                   Room
                 </label>
-                <select
+                <SearchableSelect
                   value={draft.roomId}
-                  onChange={(e) => updateDraft({ roomId: e.target.value })}
+                  onChange={(roomId) => updateDraft({ roomId })}
+                  options={roomOptions}
+                  placeholder="Select room..."
+                  searchPlaceholder="Search rooms..."
                   disabled={loading}
                   required
-                  className={`${selectClass} w-full min-w-0`}
-                >
-                  <option value="">Select room...</option>
-                  {rooms.map((r) => (
-                    <option key={r._id} value={r._id}>
-                      {r.name} ({r.type})
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div className="flex flex-wrap justify-end gap-2 pt-2">
